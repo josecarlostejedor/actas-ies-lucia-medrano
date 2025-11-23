@@ -14,7 +14,6 @@ try:
     import openai
     from docx import Document
     from fpdf import FPDF
-    # Verificamos versión de streamlit
     ver = st.__version__.split('.')
     if int(ver[0]) < 1 or (int(ver[0]) == 1 and int(ver[1]) < 40):
         raise ImportError("Versión vieja")
@@ -42,25 +41,24 @@ if 'grabaciones_guardadas' not in st.session_state:
     st.session_state.grabaciones_guardadas = []
 if 'contador_micro' not in st.session_state:
     st.session_state.contador_micro = 0
+# Esta clave sirve para resetear el cargador de archivos
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
 
 # --- FUNCIONES DE LÓGICA ---
 def transcribir_audio(audio_file, api_key):
     client = openai.OpenAI(api_key=api_key)
-    
-    # 1. Resetear el puntero del archivo al inicio (CRUCIAL)
     audio_file.seek(0)
     
-    # 2. Gestión inteligente del nombre del archivo (FIX IPAD)
-    # Intentamos obtener el nombre real. Si no existe (grabación web), asignamos uno seguro.
+    # FIX IPAD/IPHONE: Forzar nombre con extensión si no la tiene
     if hasattr(audio_file, 'name') and audio_file.name:
         nombre_archivo = audio_file.name
     else:
-        nombre_archivo = "audio_ipad.wav" # Nombre por defecto para grabaciones sin nombre
+        nombre_archivo = "audio_ipad.wav"
 
-    # 3. Llamada a la API enviando explícitamente el nombre con extensión
     transcript = client.audio.transcriptions.create(
         model="whisper-1", 
-        file=(nombre_archivo, audio_file), # La tupla (nombre, archivo) es obligatoria para formatos Apple
+        file=(nombre_archivo, audio_file),
         language="es"
     )
     return transcript.text
@@ -70,23 +68,23 @@ def generar_contenido_acta(transcripcion_completa, fecha, api_key):
     
     prompt_sistema = f"""
     Eres el secretario experto del Departamento de Educación Física del IES Lucía de Medrano.
-    Tu tarea es convertir una transcripción de reunión (que puede venir de varios audios unidos) en un ACTA FORMAL.
+    Tu tarea es convertir una transcripción de reunión en un ACTA FORMAL.
     
-    REGLAS DE REDACCIÓN:
-    1. Estilo general: Impersonal, formal y administrativo.
-    2. EXCEPCIÓN CRÍTICA: Si en el texto alguien dice explícitamente "que conste en acta" o similar, transcribe EXACTAMENTE lo que dice a continuación y atribúyelo a la persona: "D. [Nombre] manifestó lo siguiente: [Cita textual]".
+    REGLAS:
+    1. Estilo: Impersonal, formal y administrativo.
+    2. EXCEPCIÓN: Si alguien dice "que conste en acta", transcribe EXACTAMENTE: "D. [Nombre] manifestó lo siguiente: [Cita textual]".
     3. ASISTENTES: Si se menciona que alguien faltó, extráelo. Si no, asume que están todos.
     
-    ESTRUCTURA DE TU RESPUESTA (Solo devuelve el contenido del cuerpo y ausencias):
-    - Primero: "AUSENCIAS: [Nombres]" o "AUSENCIAS: Ninguna".
-    - Segundo: Redacta los puntos tratados en párrafos numerados.
+    ESTRUCTURA (Solo cuerpo):
+    - "AUSENCIAS: [Nombres]" o "AUSENCIAS: Ninguna".
+    - Puntos tratados numerados.
     """
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": prompt_sistema},
-            {"role": "user", "content": f"La reunión fue el {fecha}. Transcripción completa: {transcripcion_completa}"}
+            {"role": "user", "content": f"Fecha: {fecha}. Transcripción: {transcripcion_completa}"}
         ]
     )
     return response.choices[0].message.content
@@ -135,7 +133,7 @@ def crear_documento_word(contenido_ai, fecha):
     doc.add_paragraph(texto_cuerpo.strip())
     doc.add_paragraph("") 
 
-    # Cierre y Firma
+    # Cierre
     p_cierre = doc.add_paragraph()
     p_cierre.add_run("Y para que conste en acta y surta los efectos oportunos donde proceda firmo la siguiente.\n")
     p_cierre.add_run(f"En Salamanca a {fecha}")
@@ -162,25 +160,23 @@ with st.expander("🔐 Configuración", expanded=not st.session_state.get('api_o
 st.divider()
 fecha_sesion = st.date_input("📅 Fecha de la sesión", date.today())
 
-# 2. ZONA DE CARGA (PESTAÑAS)
+# 2. ZONA DE CARGA
 st.write("### 🎙️ Gestión de Audios")
-st.info("Compatible con iPad/iPhone (m4a) y grabación directa.")
 
 tab1, tab2 = st.tabs(["📂 1. Subir Archivos", "🎤 2. Grabar (Multi-toma)"])
 
-# --- PESTAÑA 1: ARCHIVOS ---
 with tab1:
+    # Usamos una key dinámica. Al cambiar 'uploader_key', este widget se resetea.
+    key_dinamica = f"uploader_{st.session_state.uploader_key}"
     archivos_subidos = st.file_uploader(
         "Arrastra archivos aquí (mp3, m4a, wav)", 
         type=["mp3", "m4a", "wav"], 
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        key=key_dinamica
     )
 
-# --- PESTAÑA 2: GRABADORA CON MEMORIA ---
 with tab2:
-    st.write("Graba tus intervenciones una a una. Al terminar una, pulsa 'Guardar'.")
-    
-    # Key dinámica
+    st.write("Graba y pulsa 'Guardar'.")
     key_micro = f"micro_input_{st.session_state.contador_micro}"
     audio_temporal = st.audio_input("Microfono", key=key_micro)
 
@@ -190,19 +186,14 @@ with tab2:
         with col_a:
             st.audio(audio_temporal)
         with col_b:
-            if st.button("💾 GUARDAR ESTA GRABACIÓN Y LIMPIAR", type="primary"):
-                # FIX IMPORTANTE: Añadimos extensión .wav al nombre para que la API lo reconozca
+            if st.button("💾 GUARDAR Y LIMPIAR", type="primary"):
                 timestamp = date.today().strftime("%H-%M-%S")
-                # Streamlit en web suele generar wav, forzamos esa extensión en el nombre
                 audio_temporal.name = f"Grabacion_directo_{timestamp}.wav"
-                
                 st.session_state.grabaciones_guardadas.append(audio_temporal)
-                
-                # Reset
                 st.session_state.contador_micro += 1
                 st.rerun()
 
-# 3. RESUMEN DE AUDIOS (LISTA TOTAL)
+# 3. RESUMEN
 st.divider()
 st.subheader("🎧 Audios listos para procesar")
 
@@ -217,16 +208,10 @@ if count == 0:
     st.markdown("*La lista está vacía.*")
 else:
     for i, audio in enumerate(lista_total):
-        nombre_audio = getattr(audio, 'name', f"Audio {i+1}.wav")
-        size_kb = len(audio.getvalue())/1024
-        st.text(f"{i+1}. {nombre_audio} ({size_kb:.1f} KB)")
-    
-    if st.session_state.grabaciones_guardadas:
-        if st.button("🗑️ Borrar grabaciones del micro"):
-            st.session_state.grabaciones_guardadas = []
-            st.rerun()
+        nombre = getattr(audio, 'name', f"Audio {i+1}.wav")
+        st.text(f"{i+1}. {nombre}")
 
-# 4. FINALIZAR
+# 4. GENERAR ACTA
 st.divider()
 boton_finalizar = st.button(
     f"✅ PROCESAR {count} AUDIOS Y GENERAR ACTA", 
@@ -239,42 +224,76 @@ if boton_finalizar:
     if not api_key:
         st.error("⚠️ Falta la API Key.")
     elif count > 20:
-        st.error(f"⚠️ Has superado el límite de 20 archivos (Tienes {count}).")
+        st.error(f"⚠️ Has superado el límite de 20 archivos.")
     else:
+        # ... (PROCESO DE GENERACIÓN) ...
         transcripcion_total = ""
         barra = st.progress(0, text="Iniciando...")
-        
         try:
             for i, archivo in enumerate(lista_total):
-                barra.progress((i / count) * 0.8, text=f"Transcribiendo audio {i+1}/{count}...")
+                barra.progress((i / count) * 0.8, text=f"Transcribiendo {i+1}/{count}...")
                 try:
                     texto = transcribir_audio(archivo, api_key)
                     transcripcion_total += f"\n--- Audio {i+1} ---\n{texto}\n"
-                except Exception as e_trans:
-                    st.error(f"Error transcribiendo el audio {i+1} ({archivo.name}): {str(e_trans)}")
-                    # Seguimos con los siguientes aunque este falle
-                    continue
+                except Exception as e:
+                    st.error(f"Error en audio {i+1}: {e}")
             
-            if not transcripcion_total.strip():
-                st.error("No se ha podido transcribir nada. Verifica los archivos.")
-            else:
-                barra.progress(0.85, text="Redactando acta oficial...")
-                contenido_acta = generar_contenido_acta(transcripcion_total, fecha_sesion, api_key)
-                
-                barra.progress(0.95, text="Creando Word...")
-                doc_final = crear_documento_word(contenido_acta, fecha_sesion)
-                
-                barra.progress(1.0, text="¡Hecho!")
+            if transcripcion_total.strip():
+                barra.progress(0.85, text="Redactando...")
+                contenido = generar_contenido_acta(transcripcion_total, fecha_sesion, api_key)
+                doc = crear_documento_word(contenido, fecha_sesion)
+                barra.progress(1.0, text="¡Listo!")
                 st.balloons()
-                st.success("🎉 Acta generada.")
                 
+                st.success("🎉 Acta generada correctamente. Descárgala abajo.")
                 st.download_button(
-                    label="📥 DESCARGAR ACTA (.DOCX)",
-                    data=doc_final.getvalue(),
+                    label="📥 DESCARGAR WORD (.DOCX)",
+                    data=doc.getvalue(),
                     file_name=f"Acta_EF_{fecha_sesion}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     type="primary"
                 )
-            
+            else:
+                st.error("No se detectó voz en los archivos.")
         except Exception as e:
-            st.error(f"Error general: {str(e)}")
+            st.error(f"Error: {e}")
+
+# 5. ZONA DE LIMPIEZA Y BORRADO (NUEVO)
+st.write("---")
+st.write("### 🗑️ Gestión de Privacidad")
+
+# Variable de estado para controlar si se muestra la confirmación
+if 'mostrar_confirmacion' not in st.session_state:
+    st.session_state.mostrar_confirmacion = False
+
+col_clean1, col_clean2 = st.columns([3, 1])
+
+with col_clean1:
+    st.caption("Una vez descargada el acta, se recomienda borrar los audios del servidor para liberar espacio y mantener la privacidad.")
+
+with col_clean2:
+    if st.button("Borrar Archivos", type="secondary"):
+        st.session_state.mostrar_confirmacion = True
+
+# Lógica de confirmación
+if st.session_state.mostrar_confirmacion:
+    st.warning("⚠️ **¿Estás seguro?** Esta acción no se puede deshacer. Se eliminarán todos los archivos subidos y grabados.")
+    
+    col_conf1, col_conf2 = st.columns(2)
+    with col_conf1:
+        if st.button("❌ Cancelar"):
+            st.session_state.mostrar_confirmacion = False
+            st.rerun()
+            
+    with col_conf2:
+        if st.button("✅ SÍ, BORRAR TODO"):
+            # 1. Vaciar lista de grabaciones
+            st.session_state.grabaciones_guardadas = []
+            # 2. Resetear contadores
+            st.session_state.contador_micro = 0
+            # 3. Truco: Cambiar la clave del uploader fuerza a Streamlit a reiniciarlo vacío
+            st.session_state.uploader_key += 1
+            # 4. Ocultar confirmación
+            st.session_state.mostrar_confirmacion = False
+            # 5. Recargar la página
+            st.rerun()
