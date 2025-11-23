@@ -36,12 +36,11 @@ import io
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Actas EF - IES Lucía de Medrano", page_icon="📝")
 
-# --- GESTIÓN DE MEMORIA (SESSION STATE) ---
+# --- GESTIÓN DE MEMORIA ---
 if 'grabaciones_guardadas' not in st.session_state:
     st.session_state.grabaciones_guardadas = []
 if 'contador_micro' not in st.session_state:
     st.session_state.contador_micro = 0
-# Esta clave sirve para resetear el cargador de archivos
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
 
@@ -50,7 +49,6 @@ def transcribir_audio(audio_file, api_key):
     client = openai.OpenAI(api_key=api_key)
     audio_file.seek(0)
     
-    # FIX IPAD/IPHONE: Forzar nombre con extensión si no la tiene
     if hasattr(audio_file, 'name') and audio_file.name:
         nombre_archivo = audio_file.name
     else:
@@ -66,25 +64,30 @@ def transcribir_audio(audio_file, api_key):
 def generar_contenido_acta(transcripcion_completa, fecha, api_key):
     client = openai.OpenAI(api_key=api_key)
     
+    # --- AQUÍ ESTÁ EL CAMBIO CLAVE: PROMPT EXHAUSTIVO ---
     prompt_sistema = f"""
-    Eres el secretario experto del Departamento de Educación Física del IES Lucía de Medrano.
-    Tu tarea es convertir una transcripción de reunión en un ACTA FORMAL.
+    Eres el secretario del Departamento de Educación Física del IES Lucía de Medrano.
+    Tu tarea es redactar un ACTA DE REUNIÓN EXHAUSTIVA Y FIEL A LA REALIDAD.
     
-    REGLAS:
-    1. Estilo: Impersonal, formal y administrativo.
-    2. EXCEPCIÓN: Si alguien dice "que conste en acta", transcribe EXACTAMENTE: "D. [Nombre] manifestó lo siguiente: [Cita textual]".
-    3. ASISTENTES: Si se menciona que alguien faltó, extráelo. Si no, asume que están todos.
+    INSTRUCCIONES DE REDACCIÓN (IMPORTANTE):
+    1. NO HAGAS UN RESUMEN CORTO. Necesito un registro detallado de todo lo hablado.
+    2. Cuando se narren hechos generales o acuerdos conjuntos, usa estilo impersonal ("Se debatió sobre...", "Se procedió a...").
+    3. INTERVENCIONES PERSONALES (CRÍTICO): Cuando una persona concreta intervenga o dé una opinión, DEBES TRANSCRIBIR SUS PALABRAS TEXTUALMENTE (o lo más fielmente posible) y ponerlas entre comillas.
+       - Formato: D./Dña. [Nombre] manifestó: "[Sus palabras exactas]".
+       - No simplifiques sus argumentos. Si alguien se queja o argumenta extensamente, refléjalo todo.
+    4. "QUE CONSTE EN ACTA": Si alguien usa esta frase explícita, dale máxima prioridad y exactitud literal.
+    5. Solo elimina: Repeticiones exactas (tartamudeos), saludos triviales ("hola, qué tal") o ruidos. El resto del contenido DEBE aparecer.
     
-    ESTRUCTURA (Solo cuerpo):
-    - "AUSENCIAS: [Nombres]" o "AUSENCIAS: Ninguna".
-    - Puntos tratados numerados.
+    ESTRUCTURA DE SALIDA:
+    - Primero: "AUSENCIAS: [Nombres]" o "AUSENCIAS: Ninguna". (Deducir del contexto).
+    - Segundo: Desarrollo de la sesión (No uses viñetas simples, usa párrafos completos y detallados, citando a los intervinientes).
     """
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o", # Usamos el modelo más potente para captar matices
         messages=[
             {"role": "system", "content": prompt_sistema},
-            {"role": "user", "content": f"Fecha: {fecha}. Transcripción: {transcripcion_completa}"}
+            {"role": "user", "content": f"Fecha de la reunión: {fecha}. Aquí tienes la transcripción bruta completa:\n\n{transcripcion_completa}"}
         ]
     )
     return response.choices[0].message.content
@@ -162,14 +165,14 @@ fecha_sesion = st.date_input("📅 Fecha de la sesión", date.today())
 
 # 2. ZONA DE CARGA
 st.write("### 🎙️ Gestión de Audios")
+st.caption("Modo Exhaustivo: Se transcribirán literalmente las intervenciones personales.")
 
 tab1, tab2 = st.tabs(["📂 1. Subir Archivos", "🎤 2. Grabar (Multi-toma)"])
 
 with tab1:
-    # Usamos una key dinámica. Al cambiar 'uploader_key', este widget se resetea.
     key_dinamica = f"uploader_{st.session_state.uploader_key}"
     archivos_subidos = st.file_uploader(
-        "Arrastra archivos aquí (mp3, m4a, wav)", 
+        "Arrastra archivos aquí", 
         type=["mp3", "m4a", "wav"], 
         accept_multiple_files=True,
         key=key_dinamica
@@ -214,7 +217,7 @@ else:
 # 4. GENERAR ACTA
 st.divider()
 boton_finalizar = st.button(
-    f"✅ PROCESAR {count} AUDIOS Y GENERAR ACTA", 
+    f"✅ PROCESAR {count} AUDIOS Y GENERAR ACTA DETALLADA", 
     type="primary", 
     use_container_width=True,
     disabled=(count == 0)
@@ -226,12 +229,12 @@ if boton_finalizar:
     elif count > 20:
         st.error(f"⚠️ Has superado el límite de 20 archivos.")
     else:
-        # ... (PROCESO DE GENERACIÓN) ...
         transcripcion_total = ""
         barra = st.progress(0, text="Iniciando...")
         try:
+            # Fase 1: Transcripción
             for i, archivo in enumerate(lista_total):
-                barra.progress((i / count) * 0.8, text=f"Transcribiendo {i+1}/{count}...")
+                barra.progress((i / count) * 0.7, text=f"Transcribiendo audio {i+1}/{count}...")
                 try:
                     texto = transcribir_audio(archivo, api_key)
                     transcripcion_total += f"\n--- Audio {i+1} ---\n{texto}\n"
@@ -239,13 +242,18 @@ if boton_finalizar:
                     st.error(f"Error en audio {i+1}: {e}")
             
             if transcripcion_total.strip():
-                barra.progress(0.85, text="Redactando...")
+                # Fase 2: Redacción Exhaustiva
+                barra.progress(0.75, text="Analizando intervenciones y redactando al detalle (esto puede tardar un poco más)...")
                 contenido = generar_contenido_acta(transcripcion_total, fecha_sesion, api_key)
+                
+                # Fase 3: Documento
+                barra.progress(0.95, text="Maquetando documento Word...")
                 doc = crear_documento_word(contenido, fecha_sesion)
-                barra.progress(1.0, text="¡Listo!")
+                
+                barra.progress(1.0, text="¡Finalizado!")
                 st.balloons()
                 
-                st.success("🎉 Acta generada correctamente. Descárgala abajo.")
+                st.success("🎉 Acta detallada generada.")
                 st.download_button(
                     label="📥 DESCARGAR WORD (.DOCX)",
                     data=doc.getvalue(),
@@ -258,42 +266,32 @@ if boton_finalizar:
         except Exception as e:
             st.error(f"Error: {e}")
 
-# 5. ZONA DE LIMPIEZA Y BORRADO (NUEVO)
+# 5. BORRADO
 st.write("---")
-st.write("### 🗑️ Gestión de Privacidad")
+st.write("### 🗑️ Privacidad")
 
-# Variable de estado para controlar si se muestra la confirmación
 if 'mostrar_confirmacion' not in st.session_state:
     st.session_state.mostrar_confirmacion = False
 
 col_clean1, col_clean2 = st.columns([3, 1])
-
 with col_clean1:
-    st.caption("Una vez descargada el acta, se recomienda borrar los audios del servidor para liberar espacio y mantener la privacidad.")
+    st.caption("Una vez descargada el acta, borra los archivos por seguridad.")
 
 with col_clean2:
     if st.button("Borrar Archivos", type="secondary"):
         st.session_state.mostrar_confirmacion = True
 
-# Lógica de confirmación
 if st.session_state.mostrar_confirmacion:
-    st.warning("⚠️ **¿Estás seguro?** Esta acción no se puede deshacer. Se eliminarán todos los archivos subidos y grabados.")
-    
+    st.warning("⚠️ ¿Borrar todos los audios subidos y grabados?")
     col_conf1, col_conf2 = st.columns(2)
     with col_conf1:
         if st.button("❌ Cancelar"):
             st.session_state.mostrar_confirmacion = False
             st.rerun()
-            
     with col_conf2:
         if st.button("✅ SÍ, BORRAR TODO"):
-            # 1. Vaciar lista de grabaciones
             st.session_state.grabaciones_guardadas = []
-            # 2. Resetear contadores
             st.session_state.contador_micro = 0
-            # 3. Truco: Cambiar la clave del uploader fuerza a Streamlit a reiniciarlo vacío
             st.session_state.uploader_key += 1
-            # 4. Ocultar confirmación
             st.session_state.mostrar_confirmacion = False
-            # 5. Recargar la página
             st.rerun()
