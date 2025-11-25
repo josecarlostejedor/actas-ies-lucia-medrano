@@ -54,40 +54,41 @@ def transcribir_audio(audio_file, api_key):
     else:
         nombre_archivo = "audio_ipad.wav"
 
+    # Transcripción tal cual, sin intentar traducir ni inventar
     transcript = client.audio.transcriptions.create(
         model="whisper-1", 
         file=(nombre_archivo, audio_file),
-        language="es"
+        language="es",
+        temperature=0 # Temperatura 0 en whisper para máxima fidelidad auditiva
     )
     return transcript.text
 
 def generar_contenido_acta(transcripcion_completa, fecha, api_key):
     client = openai.OpenAI(api_key=api_key)
     
-    # --- AQUÍ ESTÁ EL CAMBIO CLAVE: PROMPT EXHAUSTIVO ---
+    # --- PROMPT BLINDADO CONTRA INVENCIONES ---
     prompt_sistema = f"""
-    Eres el secretario del Departamento de Educación Física del IES Lucía de Medrano.
-    Tu tarea es redactar un ACTA DE REUNIÓN EXHAUSTIVA Y FIEL A LA REALIDAD.
+    Eres un redactor técnico estricto para el Departamento de Educación Física del IES Lucía de Medrano.
+    Tu única fuente de información es la transcripción proporcionada. 
     
-    INSTRUCCIONES DE REDACCIÓN (IMPORTANTE):
-    1. NO HAGAS UN RESUMEN CORTO. Necesito un registro detallado de todo lo hablado.
-    2. Cuando se narren hechos generales o acuerdos conjuntos, usa estilo impersonal ("Se debatió sobre...", "Se procedió a...").
-    3. INTERVENCIONES PERSONALES (CRÍTICO): Cuando una persona concreta intervenga o dé una opinión, DEBES TRANSCRIBIR SUS PALABRAS TEXTUALMENTE (o lo más fielmente posible) y ponerlas entre comillas.
-       - Formato: D./Dña. [Nombre] manifestó: "[Sus palabras exactas]".
-       - No simplifiques sus argumentos. Si alguien se queja o argumenta extensamente, refléjalo todo.
-    4. "QUE CONSTE EN ACTA": Si alguien usa esta frase explícita, dale máxima prioridad y exactitud literal.
-    5. Solo elimina: Repeticiones exactas (tartamudeos), saludos triviales ("hola, qué tal") o ruidos. El resto del contenido DEBE aparecer.
+    REGLAS DE ORO (DE OBLIGADO CUMPLIMIENTO):
+    1. PROHIBIDO INVENTAR: No añadas ni un solo dato, tema o nombre que no aparezca explícitamente en el texto.
+    2. NOMBRES REALES: Si en el audio no se dice el nombre de quien habla, usa "Un profesor" o "Un asistente". JAMÁS inventes nombres propios (como "Juan", "Marta") si no se han escuchado.
+    3. FIDELIDAD: Tu trabajo es limpiar la redacción (quitar muletillas, mejorar gramática) pero MANTENIENDO EL CONTENIDO EXACTO. No resumas excesivamente.
+    4. CITA TEXTUAL: Si alguien dice "que conste en acta", transcribe literalmente: "D./Dña. [Nombre] manifestó: [Frase exacta]".
+    5. SI EL AUDIO ES RUIDO: Si la transcripción es ininteligible o solo hay ruido, escribe en el acta: "No se trataron puntos en este fragmento debido a la calidad del audio".
     
     ESTRUCTURA DE SALIDA:
-    - Primero: "AUSENCIAS: [Nombres]" o "AUSENCIAS: Ninguna". (Deducir del contexto).
-    - Segundo: Desarrollo de la sesión (No uses viñetas simples, usa párrafos completos y detallados, citando a los intervinientes).
+    - Primero: "AUSENCIAS: [Nombres detectados]" o "AUSENCIAS: Ninguna mencionada".
+    - Segundo: Desarrollo de la sesión (Párrafos claros, formales, narrando estrictamente lo sucedido en el audio).
     """
 
     response = client.chat.completions.create(
-        model="gpt-4o", # Usamos el modelo más potente para captar matices
+        model="gpt-4o", 
+        temperature=0.2, # <--- CAMBIO CLAVE: Creatividad muy baja para evitar alucinaciones
         messages=[
             {"role": "system", "content": prompt_sistema},
-            {"role": "user", "content": f"Fecha de la reunión: {fecha}. Aquí tienes la transcripción bruta completa:\n\n{transcripcion_completa}"}
+            {"role": "user", "content": f"Fecha: {fecha}. Transcripción BRUTA (Fuente única de verdad):\n\n{transcripcion_completa}"}
         ]
     )
     return response.choices[0].message.content
@@ -165,7 +166,7 @@ fecha_sesion = st.date_input("📅 Fecha de la sesión", date.today())
 
 # 2. ZONA DE CARGA
 st.write("### 🎙️ Gestión de Audios")
-st.caption("Modo Exhaustivo: Se transcribirán literalmente las intervenciones personales.")
+st.caption("Modo de Alta Fidelidad: Se prioriza la exactitud sobre el estilo. No se inventarán datos.")
 
 tab1, tab2 = st.tabs(["📂 1. Subir Archivos", "🎤 2. Grabar (Multi-toma)"])
 
@@ -217,7 +218,7 @@ else:
 # 4. GENERAR ACTA
 st.divider()
 boton_finalizar = st.button(
-    f"✅ PROCESAR {count} AUDIOS Y GENERAR ACTA DETALLADA", 
+    f"✅ PROCESAR {count} AUDIOS Y GENERAR ACTA FIEL", 
     type="primary", 
     use_container_width=True,
     disabled=(count == 0)
@@ -234,16 +235,16 @@ if boton_finalizar:
         try:
             # Fase 1: Transcripción
             for i, archivo in enumerate(lista_total):
-                barra.progress((i / count) * 0.7, text=f"Transcribiendo audio {i+1}/{count}...")
+                barra.progress((i / count) * 0.7, text=f"Transcribiendo audio {i+1}/{count} (Modo estricto)...")
                 try:
                     texto = transcribir_audio(archivo, api_key)
-                    transcripcion_total += f"\n--- Audio {i+1} ---\n{texto}\n"
+                    transcripcion_total += f"\n--- Intervención {i+1} ---\n{texto}\n"
                 except Exception as e:
                     st.error(f"Error en audio {i+1}: {e}")
             
             if transcripcion_total.strip():
-                # Fase 2: Redacción Exhaustiva
-                barra.progress(0.75, text="Analizando intervenciones y redactando al detalle (esto puede tardar un poco más)...")
+                # Fase 2: Redacción Estricta
+                barra.progress(0.75, text="Redactando acta sin invenciones...")
                 contenido = generar_contenido_acta(transcripcion_total, fecha_sesion, api_key)
                 
                 # Fase 3: Documento
@@ -253,7 +254,7 @@ if boton_finalizar:
                 barra.progress(1.0, text="¡Finalizado!")
                 st.balloons()
                 
-                st.success("🎉 Acta detallada generada.")
+                st.success("🎉 Acta generada. El contenido es fiel al audio.")
                 st.download_button(
                     label="📥 DESCARGAR WORD (.DOCX)",
                     data=doc.getvalue(),
@@ -262,7 +263,7 @@ if boton_finalizar:
                     type="primary"
                 )
             else:
-                st.error("No se detectó voz en los archivos.")
+                st.error("No se detectó voz en los archivos. Verifica que el micrófono funciona.")
         except Exception as e:
             st.error(f"Error: {e}")
 
