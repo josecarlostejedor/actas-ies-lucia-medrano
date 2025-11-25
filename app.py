@@ -2,6 +2,7 @@ import streamlit as st
 import subprocess
 import sys
 import time
+import os
 
 # --- BLOQUE DE AUTO-INSTALACIÓN ---
 def instalar(package):
@@ -45,47 +46,59 @@ if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
 
 # --- FUNCIONES DE LÓGICA ---
+
+def obtener_extension_segura(nombre_archivo):
+    """Extrae la extensión (.mp3, .wav) y devuelve un nombre ASCII seguro"""
+    try:
+        if "." in nombre_archivo:
+            ext = nombre_archivo.split(".")[-1].lower()
+            # Lista blanca de extensiones permitidas
+            if ext in ["mp3", "wav", "m4a", "mp4", "mpeg", "mpga", "webm"]:
+                return f"audio_seguro.{ext}"
+    except:
+        pass
+    return "audio_seguro.wav" # Fallback por defecto
+
 def transcribir_audio(audio_file, api_key):
     client = openai.OpenAI(api_key=api_key)
     audio_file.seek(0)
     
-    if hasattr(audio_file, 'name') and audio_file.name:
-        nombre_archivo = audio_file.name
-    else:
-        nombre_archivo = "audio_ipad.wav"
-
-    # Transcripción tal cual, sin intentar traducir ni inventar
+    # --- CORRECCIÓN DEL ERROR ASCII ---
+    # Ignoramos el nombre original con acentos y creamos uno seguro
+    nombre_original = getattr(audio_file, 'name', 'desconocido.wav')
+    nombre_seguro = obtener_extension_segura(nombre_original)
+    
+    # Enviamos a la API el archivo pero con el nombre "falso" seguro
     transcript = client.audio.transcriptions.create(
         model="whisper-1", 
-        file=(nombre_archivo, audio_file),
+        file=(nombre_seguro, audio_file), 
         language="es",
-        temperature=0 # Temperatura 0 en whisper para máxima fidelidad auditiva
+        temperature=0 # Temperatura 0 para máxima fidelidad
     )
     return transcript.text
 
 def generar_contenido_acta(transcripcion_completa, fecha, api_key):
     client = openai.OpenAI(api_key=api_key)
     
-    # --- PROMPT BLINDADO CONTRA INVENCIONES ---
+    # --- PROMPT ANTÍ-ALUCINACIONES ---
     prompt_sistema = f"""
     Eres un redactor técnico estricto para el Departamento de Educación Física del IES Lucía de Medrano.
-    Tu única fuente de información es la transcripción proporcionada. 
     
     REGLAS DE ORO (DE OBLIGADO CUMPLIMIENTO):
     1. PROHIBIDO INVENTAR: No añadas ni un solo dato, tema o nombre que no aparezca explícitamente en el texto.
-    2. NOMBRES REALES: Si en el audio no se dice el nombre de quien habla, usa "Un profesor" o "Un asistente". JAMÁS inventes nombres propios (como "Juan", "Marta") si no se han escuchado.
-    3. FIDELIDAD: Tu trabajo es limpiar la redacción (quitar muletillas, mejorar gramática) pero MANTENIENDO EL CONTENIDO EXACTO. No resumas excesivamente.
+    2. NOMBRES REALES: Si en el audio no se dice el nombre, usa "Un profesor" o "Un asistente". JAMÁS inventes nombres propios.
+    3. FIDELIDAD: Mejora la gramática pero MANTÉN EL CONTENIDO EXACTO. No resumas excesivamente.
     4. CITA TEXTUAL: Si alguien dice "que conste en acta", transcribe literalmente: "D./Dña. [Nombre] manifestó: [Frase exacta]".
-    5. SI EL AUDIO ES RUIDO: Si la transcripción es ininteligible o solo hay ruido, escribe en el acta: "No se trataron puntos en este fragmento debido a la calidad del audio".
+    5. CALIDAD: Si un fragmento es solo ruido, indícalo como "Fragmento ininteligible".
     
     ESTRUCTURA DE SALIDA:
     - Primero: "AUSENCIAS: [Nombres detectados]" o "AUSENCIAS: Ninguna mencionada".
-    - Segundo: Desarrollo de la sesión (Párrafos claros, formales, narrando estrictamente lo sucedido en el audio).
+    - Segundo: Desarrollo de la sesión (Narración formal y estricta de lo sucedido).
     """
 
     response = client.chat.completions.create(
         model="gpt-4o", 
-        temperature=0.2, # <--- CAMBIO CLAVE: Creatividad muy baja para evitar alucinaciones
+        temperature=0.2, # Creatividad baja para evitar invenciones
         messages=[
             {"role": "system", "content": prompt_sistema},
             {"role": "user", "content": f"Fecha: {fecha}. Transcripción BRUTA (Fuente única de verdad):\n\n{transcripcion_completa}"}
@@ -166,7 +179,7 @@ fecha_sesion = st.date_input("📅 Fecha de la sesión", date.today())
 
 # 2. ZONA DE CARGA
 st.write("### 🎙️ Gestión de Audios")
-st.caption("Modo de Alta Fidelidad: Se prioriza la exactitud sobre el estilo. No se inventarán datos.")
+st.caption("Modo Seguro: Se corrigen automáticamente nombres de archivo con acentos para evitar errores.")
 
 tab1, tab2 = st.tabs(["📂 1. Subir Archivos", "🎤 2. Grabar (Multi-toma)"])
 
@@ -192,6 +205,7 @@ with tab2:
         with col_b:
             if st.button("💾 GUARDAR Y LIMPIAR", type="primary"):
                 timestamp = date.today().strftime("%H-%M-%S")
+                # Nombre seguro sin acentos
                 audio_temporal.name = f"Grabacion_directo_{timestamp}.wav"
                 st.session_state.grabaciones_guardadas.append(audio_temporal)
                 st.session_state.contador_micro += 1
@@ -212,6 +226,7 @@ if count == 0:
     st.markdown("*La lista está vacía.*")
 else:
     for i, audio in enumerate(lista_total):
+        # Mostramos el nombre real al usuario, aunque internamente usaremos uno seguro
         nombre = getattr(audio, 'name', f"Audio {i+1}.wav")
         st.text(f"{i+1}. {nombre}")
 
@@ -232,17 +247,22 @@ if boton_finalizar:
     else:
         transcripcion_total = ""
         barra = st.progress(0, text="Iniciando...")
+        errores_detectados = False
+        
         try:
             # Fase 1: Transcripción
             for i, archivo in enumerate(lista_total):
-                barra.progress((i / count) * 0.7, text=f"Transcribiendo audio {i+1}/{count} (Modo estricto)...")
+                barra.progress((i / count) * 0.7, text=f"Transcribiendo audio {i+1}/{count}...")
                 try:
                     texto = transcribir_audio(archivo, api_key)
                     transcripcion_total += f"\n--- Intervención {i+1} ---\n{texto}\n"
                 except Exception as e:
-                    st.error(f"Error en audio {i+1}: {e}")
+                    errores_detectados = True
+                    st.error(f"Error procesando el audio {i+1}: {str(e)}")
             
-            if transcripcion_total.strip():
+            if not transcripcion_total.strip():
+                st.error("No se pudo obtener texto de los audios. Revisa que no estén vacíos o corruptos.")
+            else:
                 # Fase 2: Redacción Estricta
                 barra.progress(0.75, text="Redactando acta sin invenciones...")
                 contenido = generar_contenido_acta(transcripcion_total, fecha_sesion, api_key)
@@ -254,7 +274,11 @@ if boton_finalizar:
                 barra.progress(1.0, text="¡Finalizado!")
                 st.balloons()
                 
-                st.success("🎉 Acta generada. El contenido es fiel al audio.")
+                if errores_detectados:
+                    st.warning("El acta se generó, pero algunos audios dieron error (ver arriba).")
+                else:
+                    st.success("🎉 Acta generada correctamente.")
+                
                 st.download_button(
                     label="📥 DESCARGAR WORD (.DOCX)",
                     data=doc.getvalue(),
@@ -262,10 +286,8 @@ if boton_finalizar:
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     type="primary"
                 )
-            else:
-                st.error("No se detectó voz en los archivos. Verifica que el micrófono funciona.")
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error crítico: {e}")
 
 # 5. BORRADO
 st.write("---")
